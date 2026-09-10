@@ -70,7 +70,7 @@ jobs:
       - name: Publish application payload
         shell: pwsh
         run: |
-          dotnet publish client/native/Talkeando.Client/Talkeando.Client.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:Version="${{ steps.release.outputs.version }}" -p:AssemblyVersion="${{ steps.release.outputs.version }}.0" -p:FileVersion="${{ steps.release.outputs.version }}.0" --output release/Tupi-win-x64
+          dotnet publish client/native/Talkeando.Client/Talkeando.Client.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:Version="${{ steps.release.outputs.version }}" -p:AssemblyVersion="${{ steps.release.outputs.version }}.0" -p:FileVersion="${{ steps.release.outputs.version }}.0" -p:InformationalVersion="${{ steps.release.outputs.version }}+${{ github.sha }}" --output release/Tupi-win-x64
 
       - name: Install Velopack CLI
         shell: pwsh

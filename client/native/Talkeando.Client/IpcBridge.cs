@@ -365,8 +365,20 @@ public sealed class IpcBridge : IDisposable
                     // Otherwise everyone sees this member in the call for up to
                     // 60 s after the restart, and the re-join can collide with
                     // the old session (DUPLICATE_IDENTITY).
-                    await RequestGracefulShutdownAsync("update", TimeSpan.FromSeconds(2));
-                    _updater.ApplyUpdate();
+                    try
+                    {
+                        DebugLog.Write("Applying downloaded Velopack update.");
+                        await RequestGracefulShutdownAsync("update", TimeSpan.FromSeconds(2));
+                        _updater.ApplyUpdate();
+                    }
+                    catch (Exception exception)
+                    {
+                        // Unlike ordinary IPC failures this is shown by the update
+                        // modal, so the user is never left with a button that
+                        // appears to do nothing.
+                        DebugLog.Write($"Update apply failed: {exception}");
+                        Publish("update.error", new { message = exception.Message });
+                    }
                     break;
                 }
                 case "app.shutdown.ready":

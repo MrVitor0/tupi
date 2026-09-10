@@ -1234,6 +1234,7 @@ export function App() {
   } | null>(null);
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updateReady, setUpdateReady] = useState(false);
+  const [updateApplying, setUpdateApplying] = useState(false);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<"voice" | "account" | "appearance">("voice");
@@ -1584,6 +1585,7 @@ export function App() {
       }
       if (event.op === "update.available") {
         setUpdateInfo(event.data);
+        setUpdateApplying(false);
         setUpdateDismissed(false);
       }
       if (event.op === "update.progress") {
@@ -1595,6 +1597,7 @@ export function App() {
       }
       if (event.op === "update.error") {
         setUpdateProgress(null);
+        setUpdateApplying(false);
         setError(`Erro ao atualizar: ${event.data?.message ?? "Falha no download"}`);
       }
       if (event.op === "hotkey.event") {
@@ -2983,9 +2986,13 @@ export function App() {
               ) : updateReady ? (
                 <button
                   className="update-modal-btn is-ready"
-                  onClick={() => send("update.apply", {})}
+                  disabled={updateApplying}
+                  onClick={() => {
+                    setUpdateApplying(true);
+                    send("update.apply", {});
+                  }}
                 >
-                  Reiniciar e Atualizar Agora
+                  {updateApplying ? "Reiniciando e aplicando atualização..." : "Reiniciar e Atualizar Agora"}
                 </button>
               ) : (
                 <div className="update-modal-btn-group">
