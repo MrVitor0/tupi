@@ -102,7 +102,16 @@ jobs:
           Canal: ${{ steps.release.outputs.channel }}
           Commit: ${{ github.sha }}
           "@ | Set-Content release/release-notes.md
-          vpk pack --packId $env:PACK_ID --packVersion "${{ steps.release.outputs.version }}" --packDir release/Tupi-win-x64 --mainExe Tupi.exe --outputDir release/velopack --channel "${{ steps.release.outputs.velopack_channel }}" --packTitle Tupi --icon client/native/Talkeando.Client/assets/tupi.ico --framework webview2 --releaseNotes release/release-notes.md
+          $fullPackage = Join-Path release/velopack "$env:PACK_ID-${{ steps.release.outputs.version }}-${{ steps.release.outputs.velopack_channel }}-full.nupkg"
+          if (Test-Path -LiteralPath $fullPackage) {
+            # A previous attempt may have published the immutable feed and
+            # failed only while creating the human-facing GitHub release.
+            # Velopack forbids repacking the same version, so reuse that
+            # byte-identical package on a workflow retry.
+            Write-Host "Reusing existing package $fullPackage"
+          } else {
+            vpk pack --packId $env:PACK_ID --packVersion "${{ steps.release.outputs.version }}" --packDir release/Tupi-win-x64 --mainExe Tupi.exe --outputDir release/velopack --channel "${{ steps.release.outputs.velopack_channel }}" --packTitle Tupi --icon client/native/Talkeando.Client/assets/tupi.ico --framework webview2 --releaseNotes release/release-notes.md
+          }
 
           # Velopack scopes Setup.exe by channel/RID. Keep one stable alias as
           # well: the final legacy bridge uses this URL to migrate an old Inno
