@@ -146,7 +146,7 @@ jobs:
         run: |
           $tag = 'v${{ steps.release.outputs.version }}'
           $notes = "Tupi $tag (${{ steps.release.outputs.channel }}).`n`nThis release is delivered automatically to Velopack clients. The legacy v0.1.999 bridge intentionally remains the GitHub latest release for old clients."
-          $pre = if ('${{ steps.release.outputs.channel }}' -eq 'beta') { '--prerelease' } else { '' }
+          $isPreRelease = '${{ steps.release.outputs.channel }}' -eq 'beta'
           # vpk includes the channel/RID in the setup filename (for example
           # `Tupi.Client-win-x64-beta-Setup.exe`), so never assume a bare
           # `<packId>-Setup.exe` name here.
@@ -159,10 +159,18 @@ jobs:
             # solely because the tag already exists.
             gh release upload $tag $setup release/velopack/SHA256SUMS.txt --clobber
             if ($LASTEXITCODE -ne 0) { throw "Could not refresh assets for $tag." }
-            gh release edit $tag --title "Tupi $tag" --notes $notes --latest=false $pre
+            if ($isPreRelease) {
+              gh release edit $tag --title "Tupi $tag" --notes $notes --latest=false --prerelease
+            } else {
+              gh release edit $tag --title "Tupi $tag" --notes $notes --latest=false
+            }
             if ($LASTEXITCODE -ne 0) { throw "Could not refresh metadata for $tag." }
           } else {
-            gh release create $tag $setup release/velopack/SHA256SUMS.txt --title "Tupi $tag" --notes $notes --latest=false $pre
+            if ($isPreRelease) {
+              gh release create $tag $setup release/velopack/SHA256SUMS.txt --title "Tupi $tag" --notes $notes --latest=false --prerelease
+            } else {
+              gh release create $tag $setup release/velopack/SHA256SUMS.txt --title "Tupi $tag" --notes $notes --latest=false
+            }
             if ($LASTEXITCODE -ne 0) { throw "Could not create $tag." }
           }
 

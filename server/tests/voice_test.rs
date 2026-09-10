@@ -851,6 +851,9 @@ async fn version_gap_request_returns_full_snapshot() {
         serde_json::json!({ "protocol_version": 2 }),
     )
     .await;
+    // Authentication sends an unscoped initial snapshot. Drain it before
+    // asserting the separately requested, scoped recovery snapshot below.
+    let _ = ws.recv_op("voice.room.state").await;
 
     app.webhook_participant_joined(channel, bootstrap.owner_id, "PA_1").await;
     let _ = ws.recv_op("voice.room.delta").await;
