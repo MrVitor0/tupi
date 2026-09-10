@@ -97,6 +97,7 @@ o servidor detecta que o cliente pode estar dessincronizado.
 ```json
 {
   "full": true,
+  "channel_ids": ["<uuid>"],
   "rooms": [
     {
       "channel_id": "<uuid>",
@@ -131,6 +132,7 @@ Contrato campo a campo:
 | Campo | Tipo | Nulo? | Semântica |
 |---|---|---|---|
 | `full` | booleano | não | sempre `true` nesta op; existe para simetria com o delta |
+| `channel_ids` | array de uuid | sim | ausente em um snapshot completo; presente com o escopo exato de uma resposta a `voice.room.request` filtrada. O cliente substitui somente esses canais e remove os ids do escopo que não vierem em `rooms`. |
 | `rooms` | array | não | **apenas** canais com ao menos um participante, visíveis ao usuário |
 | `rooms[].channel_id` | uuid | não | id do canal de voz |
 | `rooms[].version` | inteiro sem sinal | não | monotônico crescente por canal; nunca reinicia enquanto o processo vive |

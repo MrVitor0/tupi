@@ -858,6 +858,9 @@ async fn version_gap_request_returns_full_snapshot() {
     ws.send("voice.room.request", serde_json::json!({ "channel_ids": [channel] })).await;
     let state = ws.recv_op("voice.room.state").await.expect("a voice.room.state");
     assert_eq!(state["full"], true);
+    // A targeted answer carries its replacement scope. The UI must merge this
+    // answer instead of treating it as a complete community snapshot.
+    assert_eq!(state["channel_ids"], serde_json::json!([channel]));
     let room = state["rooms"].as_array().unwrap().iter()
         .find(|r| r["channel_id"] == channel.to_string().as_str())
         .expect("the requested channel in the snapshot");

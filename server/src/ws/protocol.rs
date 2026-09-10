@@ -486,6 +486,12 @@ pub struct VoiceRoomDto {
 #[derive(Debug, Serialize)]
 pub struct VoiceRoomState {
     pub full: bool,
+    /// `None` means this is a complete community snapshot. A non-empty client
+    /// request receives the exact requested scope, including ids for rooms
+    /// that are now empty, so the client can merge it without erasing other
+    /// channels.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_ids: Option<Vec<Uuid>>,
     pub rooms: Vec<VoiceRoomDto>,
 }
 

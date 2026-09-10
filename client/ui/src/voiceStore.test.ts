@@ -41,6 +41,7 @@ afterEach(() => {
   store.__resetForTest();
   ipc.send.mockClear();
   features.set = new Set(["voice.room.v2"]);
+  vi.useRealTimers();
 });
 
 describe("voiceStore", () => {
@@ -79,6 +80,35 @@ describe("voiceStore", () => {
     ipc.dispatch("voice.room.state", { full: true, rooms: [room({ version: 1, participants: [{ user_id: "b" }] })] });
     expect(store.getState().rooms["ch"].version).toBe(1);
     expect(store.getState().rooms["ch"].participants.map(p => p.userId)).toEqual(["b"]);
+  });
+
+  it("merges a scoped snapshot without erasing unrelated voice channels", () => {
+    store.initVoiceStore();
+    ipc.dispatch("voice.room.state", {
+      full: true,
+      rooms: [room({ channel_id: "alpha", participants: [{ user_id: "a" }] }), room({ channel_id: "beta", participants: [{ user_id: "b" }] })],
+    });
+
+    // The server answered a request for alpha only. Its omission means alpha
+    // emptied, not that beta vanished too.
+    ipc.dispatch("voice.room.state", { full: true, channel_ids: ["alpha"], rooms: [] });
+    expect(store.getState().rooms.alpha).toBeUndefined();
+    expect(store.getState().rooms.beta?.participants.map(p => p.userId)).toEqual(["b"]);
+  });
+
+  it("unblocks an empty scoped snapshot so a later delta can request recovery", async () => {
+    vi.useFakeTimers();
+    store.initVoiceStore();
+    ipc.dispatch("voice.room.state", { full: true, rooms: [room({ version: 1 })] });
+    ipc.dispatch("voice.room.delta", delta({ previous_version: 4, version: 5 }));
+    expect(ipc.send).toHaveBeenCalledTimes(1);
+
+    ipc.dispatch("voice.room.state", { full: true, channel_ids: ["ch"], rooms: [] });
+    ipc.dispatch("voice.room.delta", delta({ previous_version: 0, version: 1 }));
+    // The marker was cleared: this unknown-channel delta starts a new recovery
+    // request instead of being silently discarded forever.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(ipc.send).toHaveBeenCalledTimes(2);
   });
 
   it("ignores a duplicate delta (U-23)", () => {
@@ -140,6 +170,20 @@ describe("voiceStore", () => {
     expect(store.getState().rooms["c1"]).toBeDefined();
     ipc.dispatch("voice.roster", { channel_id: "c1", participants: [], streams: [] });
     expect(store.getState().rooms["c1"]).toBeUndefined();
+  });
+
+  it("shows an occupant only in their newest room while a move is converging", () => {
+    store.initVoiceStore();
+    ipc.dispatch("voice.room.state", {
+      full: true,
+      rooms: [
+        room({ channel_id: "source", participants: [{ user_id: "a", joined_at: "2026-09-02T10:00:00Z" }] }),
+        room({ channel_id: "destination", participants: [{ user_id: "a", joined_at: "2026-09-02T10:00:01Z" }] }),
+      ],
+    });
+    const visible = store.roomsForDisplay(store.getState().rooms);
+    expect(visible.source.participants).toEqual([]);
+    expect(visible.destination.participants.map(p => p.userId)).toEqual(["a"]);
   });
 
   it("drops a track with an unknown source", () => {

@@ -33,6 +33,7 @@ const TRACK_SOURCES: readonly TrackSource[] = [
 export type RosterParticipant = {
   userId: string;
   participantSid: string | null;
+  joinedAt: string;
   muted: boolean;
   deafened: boolean;
   isBot: boolean;
@@ -82,6 +83,7 @@ export type VoiceState = {
 type ParticipantWire = {
   user_id: string;
   participant_sid?: string | null;
+  joined_at?: string;
   muted?: boolean;
   deafened?: boolean;
   is_bot?: boolean;
@@ -124,7 +126,13 @@ const listeners = new Set<(state: VoiceState) => void>();
 /** Channels awaiting a snapshot after a version gap; their deltas are dropped
  *  until it lands (protocol §2.2). */
 const awaitingSnapshot = new Set<string>();
-let lastRequestAt = 0;
+// `null` means no request has been sent yet. Using zero here delayed the first
+// request under fake clocks (and can do the same after a clock correction).
+let lastRequestAt: number | null = null;
+let pendingSnapshotIds = new Set<string>();
+let pendingFullSnapshot = false;
+let pendingSnapshotReason = "";
+let snapshotRequestTimer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
 /** The last live-participant list rtc.ts reported, so `emit` can recompute the
  *  session overlay when a delta changes someone's mute state. */
@@ -139,7 +147,12 @@ export function __resetForTest() {
   state = { rooms: {}, session: { channelId: null, participants: [] }, speaking: new Set<string>() };
   listeners.clear();
   awaitingSnapshot.clear();
-  lastRequestAt = 0;
+  lastRequestAt = null;
+  pendingSnapshotIds.clear();
+  pendingFullSnapshot = false;
+  pendingSnapshotReason = "";
+  if (snapshotRequestTimer !== null) clearTimeout(snapshotRequestTimer);
+  snapshotRequestTimer = null;
   started = false;
   lastLive = null;
 }
@@ -159,6 +172,7 @@ function toParticipant(wire: ParticipantWire): RosterParticipant {
   return {
     userId: wire.user_id,
     participantSid: wire.participant_sid ?? null,
+    joinedAt: wire.joined_at ?? "",
     muted: wire.muted ?? false,
     deafened: wire.deafened ?? false,
     isBot: wire.is_bot ?? wire.user_id === MUSIC_BOT_ID,
@@ -185,6 +199,7 @@ function fromV1(room: V1RoomWire): RoomProjection {
   const participants: RosterParticipant[] = (room.participants ?? []).map(p => ({
     userId: p.user_id,
     participantSid: null,
+    joinedAt: "",
     muted: p.muted ?? false,
     deafened: p.deafened ?? false,
     isBot: p.is_bot ?? p.user_id === MUSIC_BOT_ID,
@@ -212,14 +227,27 @@ function fromV1(room: V1RoomWire): RoomProjection {
 
 // ---- v2 application ----
 
-function applyState(payload: { full: boolean; rooms: RoomWire[] }) {
-  // A full snapshot is always the truth — replace, never merge. This is what
-  // makes the "server restarted, version is now lower" case just work
-  // (protocol §2.1).
+function applyState(payload: { full: boolean; rooms: RoomWire[]; channel_ids?: string[] }) {
+  // An unscoped state is the whole community and replaces local state (including
+  // after a server restart). A scoped response is the answer to a targeted
+  // `voice.room.request`: merge it and explicitly delete requested rooms the
+  // server omitted because they became empty. Treating a scoped answer as global
+  // used to wipe unrelated sidebar channels.
   const rooms: Record<string, RoomProjection> = {};
   for (const room of payload.rooms ?? []) rooms[room.channel_id] = toProjection(room);
-  state = { ...state, rooms };
-  for (const id of Object.keys(rooms)) awaitingSnapshot.delete(id);
+  const scope = Array.isArray(payload.channel_ids) ? payload.channel_ids : null;
+  if (scope) {
+    const merged = { ...state.rooms };
+    for (const id of scope) {
+      delete merged[id];
+      awaitingSnapshot.delete(id);
+    }
+    Object.assign(merged, rooms);
+    state = { ...state, rooms: merged };
+  } else {
+    state = { ...state, rooms };
+    awaitingSnapshot.clear();
+  }
   recomputeSession();
   emit();
 }
@@ -303,14 +331,36 @@ function applyV1Roster(payload: V1RoomWire) {
 
 // ---- snapshot requests ----
 
+function flushSnapshotRequest() {
+  snapshotRequestTimer = null;
+  const full = pendingFullSnapshot;
+  const channelIds = full ? [] : [...pendingSnapshotIds];
+  const reason = pendingSnapshotReason;
+  pendingFullSnapshot = false;
+  pendingSnapshotIds.clear();
+  pendingSnapshotReason = "";
+  lastRequestAt = Date.now();
+  if (hasFeature("voice.room.v2")) send("voice.room.request", { channel_ids: channelIds });
+  else send("voice.rooms.request", {});
+  logClient("voice.snapshot_requested", { reason, channels: channelIds.length, full });
+}
+
 function requestSnapshot(channelIds: string[], reason: string) {
   for (const id of channelIds) awaitingSnapshot.add(id);
   const now = Date.now();
-  if (now - lastRequestAt < 2000) return; // the pending request covers it
-  lastRequestAt = now;
-  if (hasFeature("voice.room.v2")) send("voice.room.request", { channel_ids: channelIds });
-  else send("voice.rooms.request", {});
-  logClient("voice.snapshot_requested", { reason, channels: channelIds.length });
+  if (channelIds.length === 0) pendingFullSnapshot = true;
+  else channelIds.forEach(id => pendingSnapshotIds.add(id));
+  pendingSnapshotReason = reason;
+
+  const wait = lastRequestAt === null ? 0 : Math.max(0, 2000 - (now - lastRequestAt));
+  if (wait === 0) {
+    if (snapshotRequestTimer !== null) clearTimeout(snapshotRequestTimer);
+    flushSnapshotRequest();
+  } else if (snapshotRequestTimer === null) {
+    // A second gap can name a different channel. Queue it for a real request;
+    // the old implementation merely marked it awaiting forever.
+    snapshotRequestTimer = setTimeout(flushSnapshotRequest, wait);
+  }
 }
 
 /** Asks the server for a full snapshot of every visible channel. Used after a
@@ -406,6 +456,36 @@ export function roomStreams(projection: RoomProjection | undefined): StreamInfoV
     const kind = kindOf(track.source);
     if (!kind) continue;
     out.push({ stream_id: track.trackSid, owner: track.owner, kind, msid: track.trackSid });
+  }
+  return out;
+}
+
+/**
+ * Produces the community sidebar projection. A person can briefly appear in a
+ * source and destination room while LiveKit delivers the two move webhooks in
+ * reverse order. Render only their newest session during that window; the
+ * registry's authoritative join path removes the stale row shortly after.
+ */
+export function roomsForDisplay(rooms: Record<string, RoomProjection>): Record<string, RoomProjection> {
+  const newest = new Map<string, { channelId: string; joinedAt: string }>();
+  for (const room of Object.values(rooms)) {
+    for (const participant of room.participants) {
+      const current = newest.get(participant.userId);
+      if (!current || participant.joinedAt > current.joinedAt || (participant.joinedAt === current.joinedAt && room.channelId > current.channelId)) {
+        newest.set(participant.userId, { channelId: room.channelId, joinedAt: participant.joinedAt });
+      }
+    }
+  }
+
+  const out: Record<string, RoomProjection> = {};
+  for (const [channelId, room] of Object.entries(rooms)) {
+    const participants = room.participants.filter(participant => newest.get(participant.userId)?.channelId === channelId);
+    if (participants.length === room.participants.length) {
+      out[channelId] = room;
+      continue;
+    }
+    const visibleOwners = new Set(participants.map(participant => participant.userId));
+    out[channelId] = { ...room, participants, tracks: room.tracks.filter(track => visibleOwners.has(track.owner)) };
   }
   return out;
 }

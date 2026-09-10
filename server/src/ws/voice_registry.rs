@@ -382,6 +382,47 @@ impl VoiceRegistry {
         change
     }
 
+    /// Applies an authoritative LiveKit join while preserving the product
+    /// invariant that one Tupi identity can occupy only one voice channel.
+    ///
+    /// LiveKit can deliver the new-room `participant_joined` before the old-room
+    /// `participant_left`. Leaving both rows until a later reconcile is what
+    /// made a drag visibly duplicate a member. The new join is authoritative,
+    /// therefore it safely evicts stale rows from every other room and returns
+    /// a delta for each affected channel.
+    pub fn webhook_participant_joined_exclusive(
+        &mut self,
+        channel_id: ChannelId,
+        user_id: UserId,
+        sid: ParticipantSid,
+    ) -> Vec<RoomChange> {
+        let previous: Vec<(ChannelId, Option<ParticipantSid>)> = self
+            .rooms
+            .iter()
+            .filter(|(id, room)| **id != channel_id && room.participants.contains_key(&user_id))
+            .map(|(id, room)| (*id, room.participants.get(&user_id).and_then(|p| p.sid.clone())))
+            .collect();
+
+        let mut changes = Vec::with_capacity(previous.len() + 1);
+        for (previous_channel, previous_sid) in previous {
+            let change = match previous_sid {
+                Some(previous_sid) => self.webhook_participant_left(previous_channel, user_id, previous_sid),
+                // A provisional row has no LiveKit SID to validate. The new
+                // authoritative join proves that provisional attempt lost.
+                None => self.hint_leaving(previous_channel, user_id).0,
+            };
+            if !change.is_empty() {
+                changes.push(change);
+            }
+        }
+
+        let joined = self.webhook_participant_joined(channel_id, user_id, sid);
+        if !joined.is_empty() {
+            changes.push(joined);
+        }
+        changes
+    }
+
     /// Removes a participant only if `sid` matches the registered one (INV-B2).
     /// A mismatched or provisional target returns an empty `RoomChange`.
     pub fn webhook_participant_left(
@@ -1031,6 +1072,22 @@ mod tests {
         let change = reg.webhook_participant_left(chan(), uid(1), "PA_old".into());
         assert!(change.is_empty(), "a left with a stale sid must be ignored");
         assert!(reg.is_participant(chan(), uid(1)));
+    }
+
+    #[test]
+    fn authoritative_join_evicts_same_user_from_the_previous_channel() {
+        let mut reg = VoiceRegistry::default();
+        let source = chan();
+        let destination = Uuid::from_u128(9001);
+        reg.webhook_participant_joined(source, uid(1), "PA_source".into());
+        reg.webhook_track_published(source, uid(1), Some("PA_source".into()), "TR_source".into(), TrackSource::ScreenShare);
+
+        let changes = reg.webhook_participant_joined_exclusive(destination, uid(1), "PA_destination".into());
+
+        assert_eq!(changes.len(), 2, "the old room and the destination both publish a delta");
+        assert!(!reg.is_participant(source, uid(1)));
+        assert!(reg.is_participant(destination, uid(1)));
+        assert!(reg.room(source).is_none(), "the stale track leaves with the old participant");
     }
 
     // ---- U-02 ----

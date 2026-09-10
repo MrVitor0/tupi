@@ -1486,7 +1486,18 @@ async fn send_voice_room_state(
         };
         state
             .hub
-            .send_to_connection(user_id, connection_id, OutboundEnvelope::new("voice.room.state", VoiceRoomState { full: true, rooms }))
+            .send_to_connection(
+                user_id,
+                connection_id,
+                OutboundEnvelope::new(
+                    "voice.room.state",
+                    VoiceRoomState {
+                        full: true,
+                        channel_ids: (!only.is_empty()).then(|| only.to_vec()),
+                        rooms,
+                    },
+                ),
+            )
             .await;
     } else {
         let rooms: Vec<VoiceRoster> = {

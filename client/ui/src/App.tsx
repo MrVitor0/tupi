@@ -3,7 +3,7 @@ import { countRender } from "./renderStats";
 import { send, subscribe } from "./ipc";
 import * as rtc from "./rtc";
 import { setServerInfo } from "./serverInfo";
-import { subscribeVoice, roomRoster, roomStreams, sessionParticipants } from "./voiceStore";
+import { subscribeVoice, roomRoster, roomStreams, roomsForDisplay, sessionParticipants } from "./voiceStore";
 import { logClient, maybeAutoSend } from "./clientLog";
 import * as screenPublisher from "./screenPublisher";
 import * as spectator from "./spectator";
@@ -105,6 +105,35 @@ type ActivityDto = {
   last_played_at?: string | null;
   is_new?: boolean | null;
 };
+
+function sameArray<T>(left: readonly T[], right: readonly T[], equal: (a: T, b: T) => boolean): boolean {
+  return left.length === right.length && left.every((entry, index) => equal(entry, right[index]));
+}
+
+function sameVoiceRooms(left: Record<string, VoiceRosterEntry[]>, right: Record<string, VoiceRosterEntry[]>): boolean {
+  const leftIds = Object.keys(left);
+  if (leftIds.length !== Object.keys(right).length) return false;
+  return leftIds.every(id => !!right[id] && sameArray(left[id], right[id], (a, b) =>
+    a.user_id === b.user_id && a.muted === b.muted && a.deafened === b.deafened && a.sharing === b.sharing && a.is_bot === b.is_bot,
+  ));
+}
+
+function sameStreams(left: readonly StreamInfo[], right: readonly StreamInfo[]): boolean {
+  return sameArray(left, right, (a, b) =>
+    a.stream_id === b.stream_id && a.owner === b.owner && a.kind === b.kind && a.label === b.label && a.msid === b.msid,
+  );
+}
+
+function sameStreamsByRoom(left: Record<string, StreamInfo[]>, right: Record<string, StreamInfo[]>): boolean {
+  const leftIds = Object.keys(left);
+  return leftIds.length === Object.keys(right).length && leftIds.every(id => !!right[id] && sameStreams(left[id], right[id]));
+}
+
+function sameParticipants(left: readonly Participant[], right: readonly Participant[]): boolean {
+  return sameArray(left, right, (a, b) =>
+    a.user_id === b.user_id && a.muted === b.muted && a.deafened === b.deafened && a.is_bot === b.is_bot,
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* small presentational helpers                                        */
@@ -1853,7 +1882,7 @@ export function App() {
   useEffect(() => subscribeVoice(voice => {
     const rooms: Record<string, VoiceRosterEntry[]> = {};
     const streamsByRoom: Record<string, StreamInfo[]> = {};
-    for (const [id, projection] of Object.entries(voice.rooms)) {
+    for (const [id, projection] of Object.entries(roomsForDisplay(voice.rooms))) {
       rooms[id] = roomRoster(projection) as VoiceRosterEntry[];
       streamsByRoom[id] = roomStreams(projection) as StreamInfo[];
     }
@@ -1868,13 +1897,20 @@ export function App() {
     }
     prevVoiceRoomsRef.current = rooms;
 
-    setVoiceRooms(rooms);
-    setVoiceRoomStreams(streamsByRoom);
+    // `setSpeaking` emits frequently. Preserve state references when its
+    // event did not alter the roster/streams, so it cannot redraw the entire
+    // sidebar or reset screen tiles.
+    setVoiceRooms(current => sameVoiceRooms(current, rooms) ? current : rooms);
+    setVoiceRoomStreams(current => sameStreamsByRoom(current, streamsByRoom) ? current : streamsByRoom);
 
     const sessionChannel = voice.session.channelId;
     if (sessionChannel) {
-      setCall({ channelId: sessionChannel, participants: sessionParticipants(voice.session) as Participant[] });
-      setStreams(streamsByRoom[sessionChannel] ?? []);
+      const participants = sessionParticipants(voice.session) as Participant[];
+      setCall(current => current?.channelId === sessionChannel && sameParticipants(current.participants, participants)
+        ? current
+        : { channelId: sessionChannel, participants });
+      const sessionStreams = streamsByRoom[sessionChannel] ?? [];
+      setStreams(current => sameStreams(current, sessionStreams) ? current : sessionStreams);
     }
 
     // Drop a hover preview whose share just vanished.

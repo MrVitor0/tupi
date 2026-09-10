@@ -209,7 +209,12 @@ function bindMedia(room: Room, sessionId: number) {
   };
   room.on(RoomEvent.ParticipantConnected, syncParticipants);
   room.on(RoomEvent.ParticipantDisconnected, syncParticipants);
-  room.on(RoomEvent.Reconnected, syncParticipants);
+  room.on(RoomEvent.Reconnected, () => {
+    syncParticipants();
+    // A reconnect can restore pre-existing publications without replaying a
+    // TrackPublished event. Reapply the user's explicit watch intent.
+    for (const ownerId of watchIntent.keys()) applySubscription(ownerId, true);
+  });
   room.on(RoomEvent.ConnectionStateChanged, syncParticipants);
   if (sessionId !== 0) {
     syncParticipants();
@@ -220,6 +225,9 @@ function bindMedia(room: Room, sessionId: number) {
     if (publication.source !== Track.Source.ScreenShare) return;
     if (watchIntent.has(participant.identity)) void publication.setSubscribed(true);
   });
+  // `TrackPublished` is not replayed for a share that already existed when we
+  // joined. This closes the race where "Assistir" is clicked while connecting.
+  for (const ownerId of watchIntent.keys()) applySubscription(ownerId, true);
   room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
     if (track.kind === Track.Kind.Video) {
       // RC-12: do NOT attach here. The component that displays the video is the
